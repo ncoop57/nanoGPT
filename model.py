@@ -137,12 +137,15 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        # nFormer: add a new layer to the end of the transformer that is a second LM head for predicting the subsequent token
+        self.lm_head_1 = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head_2 = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        self.transformer.wte.weight = self.lm_head_1.weight # https://paperswithcode.com/method/weight-tying
+        # nFormer: not gonna tie the second LM as that would just make it a copy of the first LM head
 
         # init all weights
         self.apply(self._init_weights)
@@ -174,7 +177,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets_1=None, targets_2=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -188,16 +191,24 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
+        if targets_1 is not None and targets_2 is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            logits_1 = self.lm_head_1(x)
+            logits_2 = self.lm_head_2(x)
+            loss_1 = F.cross_entropy(logits_1.view(-1, logits_1.size(-1)), targets_1.view(-1), ignore_index=-1)
+            loss_2 = F.cross_entropy(logits_2.view(-1, logits_2.size(-1)), targets_2.view(-1), ignore_index=-1)
+
+            # nFormer: return exponential weighted average of the two losses
+            loss = loss_1 + 0.5 * loss_2
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits_1 = self.lm_head_1(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            # nFormer: Do not use the second LM head for inference. TODO: look into potentially doing
+            # this and have a special decoding scheme that supports it.
             loss = None
 
-        return logits, loss
+        # nFormer: return just the first LM head logits to make it easier to use
+        return logits_1, loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -301,7 +312,8 @@ class GPT(nn.Module):
         # will only return the first occurence, key'd by 'transformer.wte.weight', below.
         # so let's manually remove 'lm_head.weight' from decay set. This will include
         # this tensor into optimization via transformer.wte.weight only, and not decayed.
-        decay.remove('lm_head.weight')
+        decay.remove('lm_head_1.weight')
+        decay.add('lm_head_2.weight')
 
         # validate that we considered every parameter
         param_dict = {pn: p for pn, p in self.named_parameters()}
