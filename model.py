@@ -199,7 +199,7 @@ class GPT(nn.Module):
             loss_2 = F.cross_entropy(logits_2.view(-1, logits_2.size(-1)), targets_2.view(-1), ignore_index=-1)
 
             # nFormer: return exponential weighted average of the two losses
-            loss = loss_1 + 0.5 * loss_2
+            loss = 0.9 * loss_1 + 0.1 * loss_2
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits_1 = self.lm_head_1(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -313,7 +313,10 @@ class GPT(nn.Module):
         # so let's manually remove 'lm_head.weight' from decay set. This will include
         # this tensor into optimization via transformer.wte.weight only, and not decayed.
         decay.remove('lm_head_1.weight')
-        decay.add('lm_head_2.weight')
+
+        # nFormer: remove lm_head_2.weight from decay set
+        decay.remove('lm_head_2.weight')
+        no_decay.add('lm_head_2.weight')
 
         # validate that we considered every parameter
         param_dict = {pn: p for pn, p in self.named_parameters()}
