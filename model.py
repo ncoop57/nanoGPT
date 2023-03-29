@@ -191,15 +191,19 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets_1 is not None and targets_2 is not None:
+        if targets_1 is not None:
             # if we are given some desired targets also calculate the loss
             logits_1 = self.lm_head_1(x)
-            logits_2 = self.lm_head_2(x)
             loss_1 = F.cross_entropy(logits_1.view(-1, logits_1.size(-1)), targets_1.view(-1), ignore_index=-1)
-            loss_2 = F.cross_entropy(logits_2.view(-1, logits_2.size(-1)), targets_2.view(-1), ignore_index=-1)
 
-            # nFormer: return exponential weighted average of the two losses
-            loss = 0.9 * loss_1 + 0.1 * loss_2
+            if targets_2 is not None:
+                logits_2 = self.lm_head_2(x)
+                loss_2 = F.cross_entropy(logits_2.view(-1, logits_2.size(-1)), targets_2.view(-1), ignore_index=-1)
+
+                # nFormer: return exponential weighted average of the two losses
+                loss = 0.9 * loss_1 + 0.1 * loss_2
+            else:
+                loss = loss_1
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits_1 = self.lm_head_1(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

@@ -219,7 +219,10 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y_1, Y_2 = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y_1, Y_2)
+                if split == 'val':
+                    _, loss = model(X, Y_1)
+                else:
+                    _, loss = model(X, Y_1, Y_2)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
